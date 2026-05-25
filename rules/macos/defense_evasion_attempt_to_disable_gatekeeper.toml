@@ -60,8 +60,8 @@ type = "eql"
 
 query = '''
 process where host.os.type == "macos" and event.type in ("start", "process_started") and
- process.name == "spctl" and
- process.args like~ "--master-disable"
+((process.name == "spctl" and process.args like~ ("--master-disable", "--global-disable")) or
+  (process.name == "defaults" and process.command_line like~ "*write*com.apple.security.assessment*"))
 '''
 note = """## Triage and analysis
 
