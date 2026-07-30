@@ -1,0 +1,136 @@
+[metadata]
+creation_date = "2026/07/30"
+integration = ["endpoint"]
+maturity = "production"
+updated_date = "2026/07/30"
+
+[rule]
+author = ["litemars"]
+description = """
+Detects the com.apple.quarantine extended attribute being stripped with the xattr utility. macOS tags files written by
+browsers, mail clients and other quarantine-aware apps with this attribute, and Gatekeeper reads it to decide whether to
+check code signing and notarization before the file runs for the first time. Once it is gone, unsigned and unnotarized
+code launches with no prompt at all.
+
+Attackers strip it immediately after staging a payload, usually in the same one-liner that downloaded it. The pattern
+shows up in most current macOS stealer chains, including the fake-CAPTCHA lures that talk a user into pasting a command
+into Terminal.
+
+Because engineers run xattr against their own builds all day, the rule only fires when a script interpreter or an
+untrusted binary drives it, or when the target sits in a temp, shared, or mounted-volume path.
+"""
+false_positives = [
+    """
+    Developers clear quarantine on their own builds and on apps macOS refuses to open, usually with `xattr -cr`. This is
+    routine on engineering hardware. Judge the alert on where the target lives and on what launched xattr rather than on
+    the command itself.
+    """
+]
+from = "now-9m"
+index = ["logs-endpoint.events.process*"]
+language = "eql"
+license = "Elastic License v2"
+name = "Quarantine Attribute Removal via xattr"
+note = """## Triage and analysis
+
+### Investigating Quarantine Attribute Removal via xattr
+
+Two fields decide this one: what was targeted and what launched xattr. A developer clearing quarantine on a build in
+their project directory looks nothing like a shell one-liner clearing it on something in /tmp.
+
+### Possible investigation steps
+
+- Look at the target path. Anything under /Volumes, /Users/Shared, /tmp or Downloads is worth chasing. A project
+  workspace usually is not. Check `process.working_directory` too, since the target is often a relative path.
+- Find the real parent via `process.Ext.effective_parent.executable`. On macOS, xpcproxy and launchd routinely break the
+  visible parent chain, so `process.parent.name` alone will mislead you.
+- Work out how the file got there. Check whether the curl, browser child process, or installer package rules fired on
+  the same host shortly before.
+- Check what happened next: a chmod +x, a Gatekeeper override event, or the file executing.
+- Pull the target's signature and notarization status. Unsigned or ad-hoc signed code with quarantine freshly stripped
+  is about as clear as this gets.
+- If the parent was a terminal, find out what the user actually pasted. Fake-CAPTCHA and "fix your Mac" lures rely on
+  the victim running the command themselves, so the terminal parent is not exculpatory.
+
+### False positive analysis
+
+- Most benign volume comes from engineering hosts. If that swamps you, scope the rule to non-developer host groups
+  rather than widening the exclusions, since the interactive-terminal path is exactly where the pasted-command attacks
+  land.
+
+### Response and remediation
+
+- Hold the target file and stop anything running from it.
+- If it already ran, treat the host as compromised: enumerate persistence, check keychain and browser credential access,
+  and review outbound connections since the event.
+- Where policy allows, require notarization so a stripped attribute alone is not enough to get code running.
+"""
+references = ["https://attack.mitre.org/techniques/T1553/001/"]
+risk_score = 47
+rule_id = "a1028bd2-748a-4fbb-96d1-1ac8176b807f"
+setup = """## Setup
+
+This rule requires data coming in from Elastic Defend.
+
+### Elastic Defend Integration Setup
+Elastic Defend is integrated into the Elastic Agent using Fleet. Upon configuration, the integration allows the Elastic
+Agent to monitor events on your host and send data to the Elastic Security app.
+
+#### Prerequisite Requirements:
+- Fleet is required for Elastic Defend.
+- To configure Fleet Server refer to the [documentation](https://www.elastic.co/guide/en/fleet/current/fleet-server.html).
+
+#### The following steps should be executed in order to add the Elastic Defend integration on a macOS System:
+- Go to the Kibana home page and click "Add integrations".
+- In the query bar, search for "Elastic Defend" and select the integration to see more details about it.
+- Click "Add Elastic Defend".
+- Configure the integration name and optionally add a description.
+- Select the type of environment you want to protect, either "Traditional Endpoints" or "Cloud Workloads".
+- Select a configuration preset.
+- Enter a name for the agent policy in "New agent policy name".
+- Click "Save and Continue".
+- To complete the integration, select "Add Elastic Agent to your hosts".
+"""
+severity = "medium"
+tags = [
+    "Domain: Endpoint",
+    "OS: macOS",
+    "Use Case: Threat Detection",
+    "Tactic: Defense Evasion",
+    "Data Source: Elastic Defend",
+    "Resources: Investigation Guide",
+]
+timestamp_override = "event.ingested"
+type = "eql"
+query = '''
+process where host.os.type == "macos" and event.type == "start" and event.action == "exec" and
+  process.name == "xattr" and
+  (
+    (process.args like~ ("-d", "-dr", "-rd", "-ds", "-w", "-wr", "-rw", "-ws") and
+     process.args like~ "com.apple.quarantine") or
+     process.args like~ ("-c", "-cr", "-rc", "-cs")
+  ) and
+  (
+    process.parent.name like~ ("osascript", "python*", "perl*", "ruby*", "node", "bash", "sh", "zsh", "tclsh*", "php*", "curl") or
+    process.parent.code_signature.trusted == false or
+    process.parent.code_signature.exists == false 
+  )
+'''
+
+[[rule.threat]]
+framework = "MITRE ATT&CK"
+
+[[rule.threat.technique]]
+id = "T1553"
+name = "Subvert Trust Controls"
+reference = "https://attack.mitre.org/techniques/T1553/"
+
+[[rule.threat.technique.subtechnique]]
+id = "T1553.001"
+name = "Gatekeeper Bypass"
+reference = "https://attack.mitre.org/techniques/T1553/001/"
+
+[rule.threat.tactic]
+id = "TA0005"
+name = "Defense Evasion"
+reference = "https://attack.mitre.org/tactics/TA0005/"
